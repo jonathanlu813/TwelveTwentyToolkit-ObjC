@@ -227,48 +227,68 @@ void tt_handleABExternalChange(ABAddressBookRef addressBook, CFDictionaryRef inf
 - (BOOL)unifyAddressBook:(ABAddressBookRef)addressBook
 {
 	NSManagedObjectContext *context = [self newContext];
-
+    
 	// Set the updated flag to NO for all linked cards.
 	NSError *error = nil;
     [context ttt_deleteAllEntitiesNamed:[TTTCDLinkedRecord entityName] error:&error];
     [context ttt_deleteAllEntitiesNamed:[TTTCDUnifiedRecord entityName] error:&error];
-
-	ABRecordRef source = ABAddressBookCopyDefaultSource(addressBook);
-	NSArray *records = (__bridge_transfer NSArray *) ABAddressBookCopyArrayOfAllPeopleInSource(addressBook, source);
-	ABAddressBookCopyArrayOfAllPeopleInSourceWithSortOrdering(addressBook, source, ABPersonGetSortOrdering());
-    CFReleaseIfNotNULL(source);
-
+    
+    CFArrayRef people = ABAddressBookCopyArrayOfAllPeople(addressBook);
+    CFMutableArrayRef peopleMutable = CFArrayCreateMutableCopy(
+                                                               kCFAllocatorDefault,
+                                                               CFArrayGetCount(people),
+                                                               people
+                                                               );
+    
+    CFArraySortValues(
+                      peopleMutable,
+                      CFRangeMake(0, CFArrayGetCount(peopleMutable)),
+                      (CFComparatorFunction) ABPersonComparePeopleByName,
+                      (void*) ABPersonGetSortOrdering()
+                      );
+    CFRelease(people);
+	NSArray *records = (__bridge_transfer NSArray *) peopleMutable;
+    
 	printf("Indexing...");
 	NSUInteger idx = 0;
 	NSUInteger count = [records count];
+    NSMutableArray *recordIds = [NSMutableArray array];
 	for (id untypedRecord in records)
 	{
 		ABRecordRef unifiedRecordRef = (__bridge ABRecordRef) untypedRecord;
 		NSNumber *recordID = [NSNumber numberWithInteger:ABRecordGetRecordID(unifiedRecordRef)];
-
+        if ([recordIds containsObject:recordID]) {
+            continue;
+        }
+        [recordIds addObject:recordID];
+        
 		TTTCDUnifiedRecord *unifiedRecord = [TTTCDUnifiedRecord insertInManagedObjectContext:context];
 		unifiedRecord.recordID = recordID;
 		unifiedRecord.sortFieldFirstName = [self createSortFieldForRecord:unifiedRecordRef sortOrdering:kABPersonSortByFirstName];
 		unifiedRecord.sortFieldLastName = [self createSortFieldForRecord:unifiedRecordRef sortOrdering:kABPersonSortByLastName];
 		unifiedRecord.positionValue = idx / (float)count;
-
+        
 		NSArray *linkedRecordsArray = (__bridge_transfer NSArray *) ABPersonCopyArrayOfAllLinkedPeople(unifiedRecordRef);
 		for (id untypedLinkedRecord in linkedRecordsArray)
 		{
 			ABRecordRef linkedRecordRef = (__bridge ABRecordRef) untypedLinkedRecord;
 			NSNumber *linkedRecordID = [NSNumber numberWithInteger:ABRecordGetRecordID(linkedRecordRef)];
-
+            if ([recordIds containsObject:linkedRecordID]) {
+                continue;
+            }
+            [recordIds addObject:linkedRecordID];
+            
 			TTTCDLinkedRecord *linkedRecord = [TTTCDLinkedRecord insertInManagedObjectContext:context];
 			linkedRecord.recordID = linkedRecordID;
 			linkedRecord.unifiedRecord = unifiedRecord;
 		}
-
+        
 		printf(".");
 		idx++;
 	}
-
+    
 	printf("\n");
-
+    
 	if (![context save:&error])
 	{
 		NSLog(@"Could not save background context: %@", error);
@@ -277,7 +297,7 @@ void tt_handleABExternalChange(ABAddressBookRef addressBook, CFDictionaryRef inf
 	{
 		NSLog(@"Unified %i records", idx);
 	}
-
+    
 	return YES;
 }
 
